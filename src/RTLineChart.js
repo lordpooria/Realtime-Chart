@@ -1,275 +1,363 @@
 import React, { Component } from "react";
-import { View, Dimensions } from "react-native";
-import Svg, {
-  Polyline,
-  G,
-  Path,
-  Circle,
-  Text,
-  Rect,
-  Line,
-  Image as SvgImage
-} from "react-native-svg";
+import { View, Text as NativeText, Dimensions } from "react-native";
+import PropTypes from "prop-types";
+import Svg, { Polyline, G, Path } from "react-native-svg";
 
-const { width, height } = Dimensions.get("window");
-
-let vertiLine = [];
-let horizLine = [];
-let speedText = [];
-let chartHeight = height / 2;
-
-const chartWidth = width / 2;
-const heightPadding = 0.0 * height;
-const widthPadding = 0.0 * width;
-for (let i = 1; i < 6; i++) {
-  let point = (i * chartWidth) / 6 + widthPadding;
-  vertiLine.push(point);
-}
-for (let i = 1; i < 4; i++) {
-  let point = (i * chartHeight) / 4 + heightPadding / 5;
-  horizLine.push(point);
-}
-for (let i = 3; i > 0; i--) {
-  let point = {
-    x: 0.02 * width,
-    y: (i * chartHeight) / 4 + 0.02 * chartHeight
-  };
-  speedText.push(point);
+class Bucket {
+  path = "";
+  isDrawn = false;
+  refToSVG;
 }
 
-const CHART_POINTS_NUM = 360; //6min (100ms) : 10*60*6
-const TIME_TO_UPDATE = 1500;
-const UPDATE_PER_MS = 1000;
-const INPUT_STREAM_PER_MS = 100;
-const SAFTY = 2; //each can must have 1 points of prev can for the sake of continuous chart
-const TIMER = 50;
-const VISIBLE_CANVAS_NUM = 18;
-const CANVAS_NUM = 36;
-let canvasPool = [];
-for (let i = 0; i < CANVAS_NUM; i++) {
-  canvasPool.push(i);
-}
-
-export default class RealTimeChart extends Component {
-  constructor(props) {
-    super(props);
-
-    let d = "M 0 0";
-    //setting path pool points
-    let canItemState = {};
-    for (let i = 0; i < CANVAS_NUM; i++) {
-      canItemState[`points${i}`] = "";
+class BucketManager {
+  constructor() {
+    this.visibleBuckets = this.calculateBuckets();
+    this.bucketSize = Math.ceil(360 / this.visibleBuckets);
+    //setup buckets width 3 safty extra than visible bucket for drawing path
+    for (let i = 0; i < this.visibleBuckets + 3; i++) {
+      this.bucketsArray.push(new Bucket());
     }
-    this.state = {
-      isAccessible: true,
-      bluetoothDataReceived: [],
-      speedTxt: [1, 2, 3],
-      shift: 0,
-      ...canItemState
-    };
+  }
+  visibleBuckets = 0;
 
-    this.textPoints = [];
-    this.speedArray = [];
-    this.maxSpeed = 0.1;
-    this.maxChart = 0.1;
-    this.updateChartTimer = 0;
-    this.chartTimer = 0;
-    this.currentScene = 0;
-    this.numShift = 0;
-    this.setVertiLine = this.setVertiLine.bind(this);
-    this.setHorizLine = this.setHorizLine.bind(this);
-    // this.setTextSpeed = this.setTextSpeed.bind(this);
-    // this.drawText = this.drawText.bind(this);
-    this.createPool = this.createPool.bind(this);
+  bucketSize = 0;
 
-    props.emitter.addListener("testEvent", data => {
-      this.updateChartTimer = (this.updateChartTimer + 1) % CHART_POINTS_NUM;
-      if (this.maxSpeed < data) {
-        this.maxSpeed = data;
-      }
-      if (this.speedArray.length >= CHART_POINTS_NUM) {
-        this.numShift++;
-      }
-      if (this.speedArray.length >= CHART_POINTS_NUM) {
-        this.speedArray.shift();
-        this.speedArray[CHART_POINTS_NUM - 1] = data;
-      } else this.speedArray.push(data);
-    });
+  currentBucket = 0;
+
+  bucketsArray = [];
+
+  calculateBuckets() {
+    return 30;
   }
 
-  componentDidMount() {
-    this.textPoints = [];
-    this.interval = setInterval(() => {
-      let dataLen = this.speedArray.length;
-      if (dataLen > 0) this.setChart(dataLen);
-    }, UPDATE_PER_MS);
-  }
-
-  render() {
-    return (
-      <Svg width="100%" height="100%" viewbox={`0 0 ${width} ${chartHeight}`}>
-        {vertiLine.map(this.setVertiLine)}
-        {horizLine.map(this.setHorizLine)}
-        <G x={(this.state.shift * chartWidth) / CHART_POINTS_NUM}>
-          {canvasPool.map(this.createPool)}
-        </G>
-      </Svg>
-    );
-  }
-
-  setChart = dataLen => {
-    this.chartTimer++;
-
-    //check and set maximum
-    if (this.updateChartTimer % 50 === 0) {
-      this.maxSpeed = Math.ceil(Math.max(...this.speedArray) / 4) * 4;
-      if (this.maxSpeed < 4) this.maxSpeed = 4;
-      if (this.maxChart !== Math.ceil(this.maxSpeed / 4) * 4) {
-        this.updateChartTimer = 1;
-      }
-    }
-
-    // TODO ---> edit and optimise this
-    /// check and set Text of chart in ragard to chart max change
-    if (this.maxChart !== Math.ceil(this.maxSpeed / 4) * 4) {
-      this.maxChart = Math.ceil(this.maxSpeed / 4) * 4;
-      this.setState({
-        speedTxt: [
-          parseInt(this.maxChart / 4),
-          parseInt(this.maxChart / 2),
-          parseInt((3 * this.maxChart) / 4)
-        ]
-      });
-
-      let updateChartPoint = "";
-
-      let canvasStep = CHART_POINTS_NUM / VISIBLE_CANVAS_NUM;
-      let newState = {};
-      let visibleCanvasNum = 0;
-
-      if (dataLen < CHART_POINTS_NUM) {
-        //before full width fill of chart
-        visibleCanvasNum = Math.ceil(dataLen / canvasStep);
-      } else {
-        //after full width fill of chart and chart moving
-        visibleCanvasNum = VISIBLE_CANVAS_NUM;
-        newState[`shift`] = 0;
-      }
-
-      for (let i = 0; i < visibleCanvasNum; i++) {
-        updateChartPoint = "";
-        for (
-          let j = i * canvasStep;
-          j <= (i + 1) * canvasStep + 1 && j < dataLen;
-          j++
-        ) {
-          updateChartPoint += `${widthPadding +
-            (chartWidth * j) / CHART_POINTS_NUM},${chartHeight *
-            (1 - this.speedArray[j] / this.maxChart) +
-            heightPadding / 5} `;
-        }
-        newState[`points${i}`] = updateChartPoint;
-      }
-
-      for (let i = visibleCanvasNum; i < canvasPool.length; i++) {
-        newState[`points${i}`] = "";
-      }
-
-      this.setState(newState);
-      this.currentScene = visibleCanvasNum;
-      return;
-    }
-
-    let updateChartPoint = "";
-    if (!this.goToNextPool())
-      updateChartPoint = this.state[`points${this.currentScene}`];
-
-    if (dataLen < CHART_POINTS_NUM) {
-      for (
-        let i = dataLen - UPDATE_PER_MS / INPUT_STREAM_PER_MS - SAFTY;
-        i < dataLen;
-        i++
-      ) {
-        updateChartPoint += `${widthPadding +
-          (chartWidth * i) / CHART_POINTS_NUM},${chartHeight *
-          (1 - this.speedArray[i] / this.maxChart) +
-          heightPadding / 5} `;
-      }
-      this.setChartState(this.currentScene, updateChartPoint);
-    } else {
-      let shifted = this.state.shift;
-      for (
-        let i = dataLen - UPDATE_PER_MS / INPUT_STREAM_PER_MS - SAFTY;
-        i < dataLen;
-        i++
-      ) {
-        updateChartPoint += `${widthPadding +
-          (chartWidth * (i - shifted + this.numShift)) /
-            CHART_POINTS_NUM},${chartHeight *
-          (1 - this.speedArray[i] / this.maxChart) +
-          heightPadding / 5} `;
-      }
-      this.setChartState(this.currentScene, updateChartPoint);
-      this.setState(prevState => ({ shift: prevState.shift - this.numShift }));
-      this.numShift = 0;
-    }
-  };
-
-  createPool(item, index) {
-    return (
-      <Polyline
-        key={index}
-        points={this.state[`points${item}`]}
-        strokeWidth="2"
-        fill="transparent"
-        stroke="white"
-      />
-    );
-  }
-
-  setVertiLine(value, index) {
-    return (
-      <Line
-        key={index}
-        x1={value}
-        y1={0}
-        x2={value}
-        y2={chartHeight + (2 * heightPadding) / 5}
-        stroke="#888"
-      />
-    );
-  }
-
-  setHorizLine(value, index) {
-    return (
-      <Line
-        key={index}
-        x1={widthPadding}
-        y1={value}
-        x2={chartWidth + widthPadding}
-        y2={value}
-        stroke="#888"
-      />
-    );
-  }
-
-  goToNextPool = () => {
+  nextBucket = (chartWindowSize, VISIBLE_BUCKETS_NUM, updateEachMS) => {
+    console.log(this.currentBucket);
     if (
       this.chartTimer %
-        (CHART_POINTS_NUM /
-          ((UPDATE_PER_MS / INPUT_STREAM_PER_MS) * VISIBLE_CANVAS_NUM)) ===
+        (chartWindowSize / ((updateEachMS / 100) * VISIBLE_BUCKETS_NUM)) ===
       0
     ) {
-      this.currentScene++;
-      if (this.currentScene >= canvasPool.length) {
-        this.currentScene = 0;
+      this.currentBucket++;
+      if (this.currentBucket >= this.bucketsArray.length) {
+        this.currentBucket = 0;
       }
+      ///reset out of screen bucket Path
+      const exitedBucketIndex =
+        (this.currentBucket + this.visibleBuckets) % this.bucketsArray.length;
+      
+      this.bucketsArray[exitedBucketIndex].isDrawn = false;
+
       return true;
     }
   };
-  setChartState(index, updateChartPoint) {
-    let canItemState = {};
-    canItemState[`points${index}`] = updateChartPoint;
-    this.setState(canItemState);
+}
+
+class RealTimeChart extends Component {
+  chartTimer = 0;
+
+  newAddedData = 0;
+
+  maxY = 0.1;
+
+  dataWindow = [];
+
+  bucketManager = new BucketManager();
+
+  pathsRef = [];
+
+  lastDrawPoints = [];
+
+  state = {
+    width: 0,
+    height: 0,
+    shift: 0
+  };
+
+  __onLayout = event => {
+    const {
+      nativeEvent: {
+        layout: { height, width }
+      }
+    } = event;
+
+    this.setState({ height, width });
+  };
+
+  componentDidMount() {
+    const { updateEachMS, chartWindowSize, dataListenerName } = this.props;
+
+    this.addListener(
+      dataListenerName,
+      chartWindowSize,
+      this.bucketManager.visibleBuckets,
+      updateEachMS,
+      this.state.width,
+      this.state.height,
+      this.state.shift
+    );
+  }
+
+  componentWillUnmount() {
+    clearInterval(this.drawInterval);
+  }
+
+  addListener = (
+    dataListenerName,
+    chartWindowSize,
+    VISIBLE_BUCKETS_NUM,
+    updateEachMS
+  ) => {
+    this.props.emitter.addListener(dataListenerName, data => {
+      this.chartTimer++;
+
+      this.newAddedData++;
+      if (this.dataWindow.length >= chartWindowSize) {
+        this.dataWindow.shift();
+        this.dataWindow[chartWindowSize - 1] = data;
+      } else this.dataWindow.push(data);
+
+      if (this.maxY < data) {
+        if (this.chartTimer % 10 === 0) {
+          this.renderChart(true);
+        } else if (this.chartTimer % 10 === 5) {
+          const { width, height, shift } = this.state;
+          this.maxY = data;
+          this.resetUpdateChart(
+            this.dataWindow.length,
+            VISIBLE_BUCKETS_NUM,
+            chartWindowSize,
+            width,
+            height
+          );
+        }
+      } else {
+        if (this.chartTimer % 10 === 0) {
+          this.renderChart();
+        } else if (this.chartTimer % 10 === 5) {
+          const { width, height, shift } = this.state;
+          this.updateChart(
+            this.dataWindow.length,
+            VISIBLE_BUCKETS_NUM,
+            chartWindowSize,
+            updateEachMS,
+            width,
+            height,
+            shift
+          );
+        }
+      }
+
+      //each time it's render or calculate new chart data
+    });
+  };
+
+  render() {
+    const { style, chartWindowSize, children } = this.props;
+    const { width, height, shift } = this.state;
+
+    const extraProps = { width, height, dataWindow: this.dataWindow };
+    return (
+      <View style={style}>
+        <View
+          style={{ flex: 1, backgroundColor: "red" }}
+          onLayout={this.__onLayout}
+        >
+          {height > 0 && width > 0 && (
+            <Svg
+              width={width}
+              height={height}
+              viewbox={`0 0 ${width} ${height}`}
+            >
+              {React.Children.map(children, child => {
+                if (child) {
+                  React.cloneElement(child, extraProps);
+                }
+              })}
+              <G fill="red" x={(shift * width) / chartWindowSize}>
+                {this.bucketManager.bucketsArray.map(this.createPool)}
+              </G>
+            </Svg>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  resetUpdateChart = (
+    dataLen,
+    VISIBLE_BUCKETS_NUM,
+    chartWindowSize,
+    width,
+    height
+  ) => {
+    let updateChartPoint = "";
+
+    let newState = {};
+    let visibleBucketNum = 0;
+
+    if (dataLen < chartWindowSize) {
+      //before full width fill of chart
+      visibleBucketNum = Math.ceil(dataLen / this.bucketManager.bucketSize);
+    } else {
+      //after full width fill of chart and chart moving
+      visibleBucketNum = VISIBLE_BUCKETS_NUM;
+      newState[`shift`] = 0;
+    }
+
+    for (let i = 0; i < visibleBucketNum; i++) {
+      let j = i * this.bucketManager.bucketSize;
+      let pathPoints = this.calcPathPoint(width, height, dataLen, j);
+
+      updateChartPoint = `M ${pathPoints[0]},${pathPoints[1]}`;
+
+      for (
+        j;
+        j <= (i + 1) * this.bucketManager.bucketSize + 1 && j < dataLen;
+        j++
+      ) {
+        pathPoints = this.calcPathPoint(width, height, dataLen, j);
+        updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
+      }
+
+      this.updateBucketPath(
+        this.bucketManager.bucketsArray[i],
+        updateChartPoint
+      );
+    }
+
+    for (let i = visibleBucketNum; i < this.bucketManager.bucketSize; i++) {
+      this.updateBucketPath(this.bucketManager.bucketsArray[i], "");
+    }
+
+    this.setState(newState);
+    this.bucketManager.currentBucket = visibleBucketNum;
+  };
+
+  updateChart = (
+    dataLen,
+    VISIBLE_BUCKETS_NUM,
+    chartWindowSize,
+    updateEachMS,
+    width,
+    height,
+    shifted
+  ) => {
+    //check and set maximum
+    // if (this.chartTimer % 50 === 0) {
+    //   this.maxData = Math.ceil(Math.max(...this.dataWindow) / 4) * 4;
+    //   if (this.maxY < 4) this.maxData = 4;
+    //   if (this.maxChart !== Math.ceil(this.maxY / 4) * 4) {
+    //   }
+    // }
+    const doesGoNext = this.bucketManager.nextBucket(
+      chartWindowSize,
+      VISIBLE_BUCKETS_NUM,
+      updateEachMS
+    );
+
+    let index = dataLen - this.newAddedData;
+    let pathPoints = this.calcPathPoint(width, height, dataLen, index);
+    let updateChartPoint = "";
+
+    if (!doesGoNext) {
+      updateChartPoint = this.bucketManager.bucketsArray[
+        this.bucketManager.currentBucket
+      ].path;
+    } else {
+      updateChartPoint = `M ${pathPoints[0]},${pathPoints[1]}`;
+    }
+
+    // if (dataLen < chartWindowSize) {
+    //   for (index; index < dataLen; index++) {
+    //     pathPoints = this.calcPathPoint(width, height, dataLen, index);
+    //     updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
+    //   }
+    // } else {
+    //   for (index; index < dataLen; index++) {
+    //     pathPoints = this.calcPathPoint(
+    //       width,
+    //       height,
+    //       dataLen,
+    //       index - shifted + this.numShift
+    //     );
+    //     updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
+    //   }
+
+    let shiftX = 0;
+    if (dataLen >= chartWindowSize) {
+      shiftX = shifted - this.newAddedData;
+      this.setState(prevState => ({
+        shift: prevState.shift - this.newAddedData
+      }));
+    }
+
+    for (index; index < dataLen; index++) {
+      pathPoints = this.calcPathPoint(width, height, dataLen, index - shiftX);
+      updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
+    }
+
+    this.updateBucketPath(
+      this.bucketManager.bucketsArray[this.bucketManager.currentBucket],
+      updateChartPoint
+    );
+    this.newAddedData = 0;
+  };
+
+  updateBucketPath(bucket, updateChartPoint) {
+    bucket.path = updateChartPoint;
+  }
+
+  drawBucketPath(bucket) {
+    bucket.refToSVG &&
+      bucket.refToSVG.setNativeProps({
+        d: bucket.path
+      });
+    bucket.isDrawn = true;
+  }
+
+  renderChart = reset => {
+    this.bucketManager.bucketsArray.forEach(bucket => {
+      if (reset) {
+        this.drawBucketPath(bucket);
+      } else if (!bucket.isDrawn) {
+        this.drawBucketPath(bucket);
+      }
+    });
+  };
+
+  createPool = (item, index) => {
+    return (
+      <Path
+        key={index}
+        d=""
+        strokeWidth="2"
+        fill="transparent"
+        stroke="white"
+        ref={refs => (item.refToSVG = refs)}
+      />
+    );
+  };
+
+  calcPathPoint(width, height, chartWindowSize, index) {
+    return [
+      (width * index) / chartWindowSize,
+      height * (1 - this.dataWindow[index] / this.maxY)
+    ];
   }
 }
+
+RealTimeChart.propTypes = {
+  chartWindowSize: PropTypes.number,
+  updateEachMS: PropTypes.number,
+  dataListenerName: PropTypes.string,
+  style: PropTypes.any
+};
+
+RealTimeChart.defaultProps = {
+  chartWindowSize: 100,
+  updateEachMS: 1000,
+  dataListenerName: "inputData",
+  style: {}
+};
+
+export default RealTimeChart;
