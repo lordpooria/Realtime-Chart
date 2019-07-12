@@ -4,9 +4,15 @@ import PropTypes from "prop-types";
 import Svg, { Polyline, G, Path } from "react-native-svg";
 
 class Bucket {
+  constructor(index) {
+    this.id = index;
+  }
+  id = 0;
   path = "";
-  isDrawn = false;
+  isDrawn = true;
+
   refToSVG;
+  addedPointsSize = 0;
 }
 
 class BucketManager {
@@ -15,7 +21,7 @@ class BucketManager {
     this.bucketSize = Math.ceil(360 / this.visibleBuckets);
     //setup buckets width 3 safty extra than visible bucket for drawing path
     for (let i = 0; i < this.visibleBuckets + 3; i++) {
-      this.bucketsArray.push(new Bucket());
+      this.bucketsArray.push(new Bucket(i));
     }
   }
   visibleBuckets = 0;
@@ -30,22 +36,17 @@ class BucketManager {
     return 30;
   }
 
-  nextBucket = (chartWindowSize, VISIBLE_BUCKETS_NUM, updateEachMS) => {
-    console.log(this.currentBucket);
+  nextBucket = () => {
     if (
-      this.chartTimer %
-        (chartWindowSize / ((updateEachMS / 100) * VISIBLE_BUCKETS_NUM)) ===
-      0
+      this.bucketsArray[this.currentBucket].addedPointsSize >= this.bucketSize
     ) {
       this.currentBucket++;
       if (this.currentBucket >= this.bucketsArray.length) {
         this.currentBucket = 0;
       }
-      ///reset out of screen bucket Path
-      const exitedBucketIndex =
-        (this.currentBucket + this.visibleBuckets) % this.bucketsArray.length;
-      
-      this.bucketsArray[exitedBucketIndex].isDrawn = false;
+      //reset new bucket
+      this.bucketsArray[this.currentBucket].addedPointsSize = 0;
+      this.bucketsArray[this.currentBucket].isDrawn = false;
 
       return true;
     }
@@ -55,7 +56,8 @@ class BucketManager {
 class RealTimeChart extends Component {
   chartTimer = 0;
 
-  newAddedData = 0;
+  newAddedDataNum = 0;
+  shiftedNum = 0;
 
   maxY = 0.1;
 
@@ -70,7 +72,7 @@ class RealTimeChart extends Component {
   state = {
     width: 0,
     height: 0,
-    shift: 0
+    shifted: 0
   };
 
   __onLayout = event => {
@@ -93,7 +95,7 @@ class RealTimeChart extends Component {
       updateEachMS,
       this.state.width,
       this.state.height,
-      this.state.shift
+      this.state.shifted
     );
   }
 
@@ -110,39 +112,37 @@ class RealTimeChart extends Component {
     this.props.emitter.addListener(dataListenerName, data => {
       this.chartTimer++;
 
-      this.newAddedData++;
+      this.newAddedDataNum++;
       if (this.dataWindow.length >= chartWindowSize) {
+        this.shiftedNum++;
         this.dataWindow.shift();
         this.dataWindow[chartWindowSize - 1] = data;
       } else this.dataWindow.push(data);
 
       if (this.maxY < data) {
+        const { width, height } = this.state;
+        this.maxY = data;
+        this.resetUpdateChart(
+          this.dataWindow.length,
+          VISIBLE_BUCKETS_NUM,
+          chartWindowSize,
+          width,
+          height
+        );
         if (this.chartTimer % 10 === 0) {
           this.renderChart(true);
-        } else if (this.chartTimer % 10 === 5) {
-          const { width, height, shift } = this.state;
-          this.maxY = data;
-          this.resetUpdateChart(
-            this.dataWindow.length,
-            VISIBLE_BUCKETS_NUM,
-            chartWindowSize,
-            width,
-            height
-          );
         }
       } else {
         if (this.chartTimer % 10 === 0) {
           this.renderChart();
         } else if (this.chartTimer % 10 === 5) {
-          const { width, height, shift } = this.state;
+          const { width, height, shifted } = this.state;
           this.updateChart(
             this.dataWindow.length,
-            VISIBLE_BUCKETS_NUM,
             chartWindowSize,
-            updateEachMS,
             width,
             height,
-            shift
+            shifted
           );
         }
       }
@@ -153,15 +153,12 @@ class RealTimeChart extends Component {
 
   render() {
     const { style, chartWindowSize, children } = this.props;
-    const { width, height, shift } = this.state;
+    const { width, height, shifted } = this.state;
 
     const extraProps = { width, height, dataWindow: this.dataWindow };
     return (
       <View style={style}>
-        <View
-          style={{ flex: 1, backgroundColor: "red" }}
-          onLayout={this.__onLayout}
-        >
+        <View style={{ flex: 1 }} onLayout={this.__onLayout}>
           {height > 0 && width > 0 && (
             <Svg
               width={width}
@@ -173,7 +170,7 @@ class RealTimeChart extends Component {
                   React.cloneElement(child, extraProps);
                 }
               })}
-              <G fill="red" x={(shift * width) / chartWindowSize}>
+              <G fill="red" x={(shifted * width) / chartWindowSize}>
                 {this.bucketManager.bucketsArray.map(this.createPool)}
               </G>
             </Svg>
@@ -201,12 +198,12 @@ class RealTimeChart extends Component {
     } else {
       //after full width fill of chart and chart moving
       visibleBucketNum = VISIBLE_BUCKETS_NUM;
-      newState[`shift`] = 0;
+      newState[`shifted`] = 0;
     }
 
     for (let i = 0; i < visibleBucketNum; i++) {
       let j = i * this.bucketManager.bucketSize;
-      let pathPoints = this.calcPathPoint(width, height, dataLen, j);
+      let pathPoints = this.calcPathPoint(width, height, chartWindowSize, j);
 
       updateChartPoint = `M ${pathPoints[0]},${pathPoints[1]}`;
 
@@ -215,29 +212,29 @@ class RealTimeChart extends Component {
         j <= (i + 1) * this.bucketManager.bucketSize + 1 && j < dataLen;
         j++
       ) {
-        pathPoints = this.calcPathPoint(width, height, dataLen, j);
+        pathPoints = this.calcPathPoint(width, height, chartWindowSize, j);
         updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
       }
 
       this.updateBucketPath(
         this.bucketManager.bucketsArray[i],
-        updateChartPoint
+        updateChartPoint,
+        this.bucketManager.bucketSize
       );
     }
 
     for (let i = visibleBucketNum; i < this.bucketManager.bucketSize; i++) {
-      this.updateBucketPath(this.bucketManager.bucketsArray[i], "");
+      this.updateBucketPath(this.bucketManager.bucketsArray[i], "", 0);
     }
-
+    this.newAddedDataNum = 0;
     this.setState(newState);
-    this.bucketManager.currentBucket = visibleBucketNum;
+
+    this.bucketManager.currentBucket = visibleBucketNum - 1;
   };
 
   updateChart = (
     dataLen,
-    VISIBLE_BUCKETS_NUM,
     chartWindowSize,
-    updateEachMS,
     width,
     height,
     shifted
@@ -249,14 +246,26 @@ class RealTimeChart extends Component {
     //   if (this.maxChart !== Math.ceil(this.maxY / 4) * 4) {
     //   }
     // }
-    const doesGoNext = this.bucketManager.nextBucket(
-      chartWindowSize,
-      VISIBLE_BUCKETS_NUM,
-      updateEachMS
-    );
 
-    let index = dataLen - this.newAddedData;
-    let pathPoints = this.calcPathPoint(width, height, dataLen, index);
+    const doesGoNext = this.bucketManager.nextBucket();
+
+    let index = dataLen - this.newAddedDataNum - 1;
+
+    if (dataLen >= chartWindowSize) {
+      
+      shifted -= this.shiftedNum ;
+      this.setState(prevState => ({
+        shifted: prevState.shifted - this.shiftedNum
+      }));
+    }
+
+    let pathPoints = this.calcPathPoint(
+      width,
+      height,
+      chartWindowSize,
+      index,
+      shifted
+    );
     let updateChartPoint = "";
 
     if (!doesGoNext) {
@@ -267,44 +276,36 @@ class RealTimeChart extends Component {
       updateChartPoint = `M ${pathPoints[0]},${pathPoints[1]}`;
     }
 
-    // if (dataLen < chartWindowSize) {
-    //   for (index; index < dataLen; index++) {
-    //     pathPoints = this.calcPathPoint(width, height, dataLen, index);
-    //     updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
-    //   }
-    // } else {
-    //   for (index; index < dataLen; index++) {
-    //     pathPoints = this.calcPathPoint(
-    //       width,
-    //       height,
-    //       dataLen,
-    //       index - shifted + this.numShift
-    //     );
-    //     updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
-    //   }
-
-    let shiftX = 0;
-    if (dataLen >= chartWindowSize) {
-      shiftX = shifted - this.newAddedData;
-      this.setState(prevState => ({
-        shift: prevState.shift - this.newAddedData
-      }));
-    }
-
     for (index; index < dataLen; index++) {
-      pathPoints = this.calcPathPoint(width, height, dataLen, index - shiftX);
+      pathPoints = this.calcPathPoint(
+        width,
+        height,
+        chartWindowSize,
+        index,
+        shifted
+      );
       updateChartPoint += `L ${pathPoints[0]},${pathPoints[1]}`;
     }
 
     this.updateBucketPath(
       this.bucketManager.bucketsArray[this.bucketManager.currentBucket],
-      updateChartPoint
+      updateChartPoint,
+      this.newAddedDataNum
     );
-    this.newAddedData = 0;
+    this.newAddedDataNum = 0;
+    this.shiftedNum = 0;
   };
 
-  updateBucketPath(bucket, updateChartPoint) {
+  updateBucketPath(bucket, updateChartPoint, newAddedDataNum) {
     bucket.path = updateChartPoint;
+
+    if (newAddedDataNum > 0) {
+      bucket.addedPointsSize += newAddedDataNum;
+      bucket.isDrawn = false;
+    } else {
+      bucket.isDrawn = true;
+      bucket.addedPointsSize = 0;
+    }
   }
 
   drawBucketPath(bucket) {
@@ -316,10 +317,8 @@ class RealTimeChart extends Component {
   }
 
   renderChart = reset => {
-    this.bucketManager.bucketsArray.forEach(bucket => {
-      if (reset) {
-        this.drawBucketPath(bucket);
-      } else if (!bucket.isDrawn) {
+    this.bucketManager.bucketsArray.forEach((bucket, index) => {
+      if (!bucket.isDrawn) {
         this.drawBucketPath(bucket);
       }
     });
@@ -338,9 +337,17 @@ class RealTimeChart extends Component {
     );
   };
 
-  calcPathPoint(width, height, chartWindowSize, index) {
+  calcPathPoint(width, height, chartWindowSize, index, shifted = 0) {
+    // console.log(
+    //   width,
+    //   height,
+    //   chartWindowSize,
+    //   index,
+    //   this.maxY,
+    //   this.dataWindow[index]
+    // );
     return [
-      (width * index) / chartWindowSize,
+      (width * (index - shifted)) / chartWindowSize,
       height * (1 - this.dataWindow[index] / this.maxY)
     ];
   }
